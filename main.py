@@ -3,12 +3,14 @@ import time
 import tempfile
 import json
 import logging
+import shutil
+import uuid
 from typing import List, Optional
 from pathlib import Path
-import shutil
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, status
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import requests
@@ -19,6 +21,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 import moviepy.editor as mp
 from fastmcp import FastMCP
+from pyngrok import ngrok
 
 # Load environment variables
 load_dotenv()
@@ -45,6 +48,25 @@ app.add_middleware(
 
 # Initialize MCP
 mcp = FastMCP("Video Upload MCP Server")
+
+# --- NGROK SETUP for Instagram ---
+# Create a temporary directory to store videos for public access
+TEMP_DIR = Path("temp_videos_public")
+TEMP_DIR.mkdir(exist_ok=True)
+# Mount this directory so it can be accessed from the web
+app.mount("/static", StaticFiles(directory=TEMP_DIR), name="static")
+
+try:
+    NGROK_TOKEN = os.getenv("NGROK_AUTHTOKEN")
+    if not NGROK_TOKEN:
+        raise ValueError("NGROK_AUTHTOKEN not found in .env file. Please get one from dashboard.ngrok.com")
+    ngrok.set_auth_token(NGROK_TOKEN)
+    public_url = ngrok.connect(8000).public_url
+    logger.info(f"✅ ngrok tunnel is active at: {public_url}")
+except Exception as e:
+    public_url = None
+    logger.error(f"❌ Could not start ngrok. Error: {e}")
+    logger.error("❌ Instagram uploads will fail. Please ensure ngrok is installed and your authtoken is correct.")
 
 class YouTubeUploader:
     def __init__(self):
@@ -141,106 +163,6 @@ class YouTubeUploader:
                 detail=f"Upload failed: {str(e)}"
             )
 
-# class InstagramUploader:
-#     def __init__(self):
-#         self.access_token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
-#         self.app_id = os.getenv("INSTAGRAM_APP_ID")
-#         self.app_secret = os.getenv("INSTAGRAM_APP_SECRET")
-        
-#         if not all([self.access_token, self.app_id, self.app_secret]):
-#             raise ValueError("Missing Instagram API credentials in environment variables")
-        
-#         self.base_url = "https://graph.facebook.com/v18.0"
-
-#     def upload_reel(self, video_path: str, caption: str) -> dict:
-#         """Upload video as Instagram Reel and return reel details."""
-#         try:
-#             # Step 1: Get user's Instagram Business Account ID
-#             user_response = requests.get(
-#                 f"{self.base_url}/me/accounts",
-#                 params={"access_token": self.access_token}
-#             )
-#             user_response.raise_for_status()
-            
-#             accounts = user_response.json().get("data", [])
-#             if not accounts:
-#                 raise HTTPException(
-#                     status_code=status.HTTP_400_BAD_REQUEST,
-#                     detail="No Facebook pages found. Link an Instagram Business Account to your Facebook page."
-#                 )
-            
-#             page_id = accounts[0]["id"]  # Use first page
-            
-#             # Get Instagram account ID
-#             ig_response = requests.get(
-#                 f"{self.base_url}/{page_id}",
-#                 params={
-#                     "fields": "instagram_business_account",
-#                     "access_token": self.access_token
-#                 }
-#             )
-#             ig_response.raise_for_status()
-            
-#             ig_account = ig_response.json().get("instagram_business_account")
-#             if not ig_account:
-#                 raise HTTPException(
-#                     status_code=status.HTTP_400_BAD_REQUEST,
-#                     detail="No Instagram Business Account linked to this Facebook page."
-#                 )
-            
-#             ig_account_id = ig_account["id"]
-            
-#             # Step 2: Upload video file to a temporary hosting service
-#             # Note: For production, you'd want to upload to your own server/CDN
-#             # For now, we'll assume the video is accessible via a public URL
-#             # This is a simplified implementation - you'd need proper file hosting
-            
-#             # Step 3: Create Instagram media container for Reel
-#             container_response = requests.post(
-#                 f"{self.base_url}/{ig_account_id}/media",
-#                 data={
-#                     "media_type": "REELS",
-#                     "video_url": f"file://{video_path}",  # This won't work in practice
-#                     "caption": caption,
-#                     "access_token": self.access_token
-#                 }
-#             )
-            
-#             # Note: Instagram requires a publicly accessible URL for the video
-#             # In a real implementation, you'd upload the file to a CDN first
-#             raise HTTPException(
-#                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
-#                 detail="Instagram upload requires video to be hosted on a public URL. "
-#                        "Please implement file hosting (CDN/server) for full functionality."
-#             )
-            
-#         except requests.RequestException as e:
-#             logger.error(f"Instagram API error: {e}")
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail=f"Instagram API error: {str(e)}"
-#             )
-#         except Exception as e:
-#             logger.error(f"Unexpected error during Instagram upload: {e}")
-#             raise HTTPException(
-#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#                 detail=f"Upload failed: {str(e)}"
-#             )
-
-
-# Make sure to have this at the top of your file
-
-# ... other imports ...
-
-# FINAL, CORRECTED InstagramUploader CLASS
-
-# FINAL, VERIFIED Resumable Upload Class for Instagram Reels
-
-
-# FINAL, OFFICIAL, AND VERIFIED Resumable Upload Class for Reels
-
-# FINAL AND CORRECT - Official Resumable Upload Protocol for Reels
-
 class InstagramUploader:
     def __init__(self):
         self.access_token = os.getenv("INSTAGRAM_ACCESS_TOKEN")
@@ -254,9 +176,9 @@ class InstagramUploader:
             raise ValueError("Missing INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_BUSINESS_ACCOUNT_ID in .env file")
 
     def upload_reel(self, video_path: str, caption: str) -> dict:
+        """Upload using the resumable upload protocol"""
         try:
             # --- Step 1: Initialize an Upload Session ---
-            # This tells Instagram you are about to send a video and gets an upload session ID.
             init_url = f"{self.base_url}/{self.ig_user_id}/media"
             init_payload = {
                 'media_type': 'REELS',
@@ -269,7 +191,6 @@ class InstagramUploader:
             logger.info(f"SUCCESS: Step 1 - Initialized upload session: {upload_session_id}")
 
             # --- Step 2: Upload the Video File ---
-            # This sends the actual video bytes to the special video server using the session ID.
             upload_url = f"{self.graph_video_url}/{upload_session_id}"
             headers = {
                 'Authorization': f'OAuth {self.access_token}',
@@ -281,7 +202,6 @@ class InstagramUploader:
             logger.info(f"SUCCESS: Step 2 - Video data uploaded successfully.")
 
             # --- Step 3: Publish the Video ---
-            # This tells Instagram to process the uploaded video and make it a Reel.
             publish_url = f"{self.base_url}/{self.ig_user_id}/media_publish"
             publish_payload = {
                 'creation_id': upload_session_id,
@@ -289,11 +209,9 @@ class InstagramUploader:
                 'access_token': self.access_token
             }
             
-            # This can take a while, so we send the command and then wait for it to be ready.
             publish_response = requests.post(publish_url, data=publish_payload)
             publish_response.raise_for_status()
             
-            # The publish call returns the ID of the final post container.
             final_container_id = publish_response.json()['id']
             logger.info(f"SUCCESS: Step 3 - Publishing command sent. Now waiting for completion. Container ID: {final_container_id}")
             
@@ -334,6 +252,68 @@ class InstagramUploader:
             logger.error(f"An unexpected error occurred: {e}")
             raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
+    def upload_reel_via_ngrok(self, public_video_url: str, caption: str) -> dict:
+        """Alternative upload method using public URL (via ngrok)"""
+        try:
+            # --- Step 1: Create Media Container ---
+            logger.info(f"Step 1: Creating container with public URL: {public_video_url}")
+            container_url = f"{self.base_url}/{self.ig_user_id}/media"
+            container_payload = {
+                'media_type': 'REELS',
+                'video_url': public_video_url,
+                'caption': caption,
+                'access_token': self.access_token
+            }
+            container_response = requests.post(container_url, data=container_payload)
+            container_response.raise_for_status()
+            creation_id = container_response.json()['id']
+            logger.info(f"✅ SUCCESS: Step 1 - Container created with ID: {creation_id}")
+
+            # --- Step 2: Poll for Container Readiness ---
+            status_check_url = f"{self.base_url}/{creation_id}"
+            status_params = {'fields': 'status_code', 'access_token': self.access_token}
+            
+            for i in range(20): # Poll for up to 100 seconds
+                time.sleep(5)
+                status_response = requests.get(status_check_url, params=status_params).json()
+                status_code = status_response.get('status_code')
+                logger.info(f"Polling attempt {i+1}/20: Container status is {status_code}")
+                
+                if status_code == 'FINISHED':
+                    # --- Step 3: Publish the Container ---
+                    logger.info(f"Step 3: Publishing container {creation_id}...")
+                    publish_url = f"{self.base_url}/{self.ig_user_id}/media_publish"
+                    publish_payload = {'creation_id': creation_id, 'access_token': self.access_token}
+                    publish_response = requests.post(publish_url, data=publish_payload)
+                    publish_response.raise_for_status()
+                    media_id = publish_response.json()['id']
+                    
+                    # --- VICTORY ---
+                    logger.info(f"🏆 VICTORY! Reel has been published. Media ID: {media_id}")
+                    permalink_url = f"{self.base_url}/{media_id}"
+                    permalink_params = {'fields': 'permalink', 'access_token': self.access_token}
+                    permalink_response = requests.get(permalink_url, params=permalink_params)
+                    permalink = permalink_response.json().get('permalink', 'N/A')
+                    
+                    return {"success": True, "media_id": media_id, "permalink": permalink}
+
+                if status_code == 'ERROR':
+                    logger.error(f"Container processing failed. Full error from Instagram: {status_response}")
+                    raise HTTPException(status_code=500, detail="Reel processing failed on Instagram's side.")
+            
+            raise HTTPException(status_code=408, detail="Reel publishing timed out.")
+
+        except requests.RequestException as e:
+            error_details = "No response from server."
+            if e.response is not None:
+                try: error_details = e.response.json()
+                except Exception: error_details = e.response.text
+            logger.error(f"Instagram API request error: {error_details}")
+            raise HTTPException(status_code=400, detail=f"Instagram API error: {error_details}")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred: {e}")
+            raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
 # Initialize uploaders
 youtube_uploader = YouTubeUploader()
 instagram_uploader = InstagramUploader()
@@ -358,7 +338,7 @@ def validate_video_file(file: UploadFile) -> bool:
     return True
 
 @app.post("/upload/youtube")
-async def upload_to_youtube(  # Add async here
+async def upload_to_youtube(
     file: UploadFile = File(...),
     title: str = Form(...),
     description: str = Form(""),
@@ -372,7 +352,7 @@ async def upload_to_youtube(  # Add async here
     
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
-        content = await file.read()  # Add await here
+        content = await file.read()
         temp_file.write(content)
         temp_path = temp_file.name
     
@@ -384,22 +364,45 @@ async def upload_to_youtube(  # Add async here
         os.unlink(temp_path)
 
 @app.post("/upload/instagram")
-async def upload_to_instagram(  # Add async
+async def upload_to_instagram(
     file: UploadFile = File(...),
-    caption: str = Form("")
+    caption: str = Form(""),
+    method: str = Form("direct")
 ):
-    """Upload video to Instagram Reels."""
+    """Upload video to Instagram Reels with option for direct or ngrok method."""
     validate_video_file(file)
+    
+    if method == "ngrok" and not public_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ngrok tunnel is not active. Cannot use ngrok method."
+        )
     
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_file:
-        content = await file.read()  # Await the file read
-        temp_file.write(content)  # Write bytes directly
+        content = await file.read()
+        temp_file.write(content)
         temp_path = temp_file.name
     
     try:
-        result = instagram_uploader.upload_reel(temp_path, caption)
-        return JSONResponse(content=result)
+        if method == "ngrok":
+            # Save to public directory
+            file_extension = Path(file.filename).suffix or ".mp4"
+            temp_filename = f"{uuid.uuid4()}{file_extension}"
+            public_temp_path = TEMP_DIR / temp_filename
+            
+            try:
+                shutil.copyfile(temp_path, public_temp_path)
+                video_public_url = f"{public_url}/static/{temp_filename}"
+                result = instagram_uploader.upload_reel_via_ngrok(video_public_url, caption)
+                return JSONResponse(content=result)
+            finally:
+                if public_temp_path.exists():
+                    os.unlink(public_temp_path)
+        else:
+            # Use direct upload method
+            result = instagram_uploader.upload_reel(temp_path, caption)
+            return JSONResponse(content=result)
     finally:
         # Clean up temporary file
         os.unlink(temp_path)
@@ -431,13 +434,14 @@ def post_to_youtube(title: str, description: str, tags: List[str], video_path: s
         return {"success": False, "error": str(e)}
 
 @mcp.tool()
-def post_to_instagram(caption: str, video_path: str) -> dict:
+def post_to_instagram(caption: str, video_path: str, method: str = "direct") -> dict:
     """
     Post a video to Instagram Reels.
     
     Args:
         caption: Caption for the reel
         video_path: Path to the video file
+        method: Upload method ("direct" or "ngrok")
         
     Returns:
         Dict containing reel_id, permalink, and upload status
@@ -446,8 +450,26 @@ def post_to_instagram(caption: str, video_path: str) -> dict:
         if not os.path.exists(video_path):
             return {"success": False, "error": "Video file not found"}
         
-        result = instagram_uploader.upload_reel(video_path, caption)
-        return result
+        if method == "ngrok" and not public_url:
+            return {"success": False, "error": "ngrok tunnel is not active"}
+        
+        if method == "ngrok":
+            # Save to public directory
+            file_extension = Path(video_path).suffix or ".mp4"
+            temp_filename = f"{uuid.uuid4()}{file_extension}"
+            public_temp_path = TEMP_DIR / temp_filename
+            
+            try:
+                shutil.copyfile(video_path, public_temp_path)
+                video_public_url = f"{public_url}/static/{temp_filename}"
+                result = instagram_uploader.upload_reel_via_ngrok(video_public_url, caption)
+                return result
+            finally:
+                if public_temp_path.exists():
+                    os.unlink(public_temp_path)
+        else:
+            result = instagram_uploader.upload_reel(video_path, caption)
+            return result
         
     except Exception as e:
         logger.error(f"MCP Instagram upload error: {e}")
@@ -469,19 +491,18 @@ async def root():
             "instagram_upload": "/upload/instagram",
             "health": "/health"
         },
-        "mcp_tools": ["post_to_youtube", "post_to_instagram"]
+        "mcp_tools": ["post_to_youtube", "post_to_instagram"],
+        "ngrok_status": "active" if public_url else "inactive",
+        "ngrok_url": public_url if public_url else None
     }
 
 # Include MCP routes
-# Correct
-app.mount("/mcp", mcp) 
+app.mount("/mcp", mcp)
 
 if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
         port=8000,
-        reload=True,
-        # ssl_keyfile=os.getenv("SSL_KEYFILE"),
-        # ssl_certfile=os.getenv("SSL_CERTFILE")
+        reload=True
     )
